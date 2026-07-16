@@ -3,67 +3,27 @@ import io
 import uuid
 import zipfile
 import asyncio
-import qrcode
 from datetime import datetime, timedelta
 from pathlib import Path
 from aiohttp import web
 import aiosqlite
-# Безопасный импорт cloudinary — не крашит, если переменная не задана
-CLOUDINARY_AVAILABLE = False
-try:
-    import cloudinary
-    import cloudinary.uploader
-    
-    # Проверяем, задана ли переменная
-    cloudinary_url = os.getenv("CLOUDINARY_URL")
-    if cloudinary_url and cloudinary_url.strip().startswith("cloudinary://"):
-            CLOUDINARY_AVAILABLE = True
-        print("✅ Cloudinary подключен")
-    else:
-        print("️ CLOUDINARY_URL не задан — загрузка файлов отключена")
-except Exception as e:
-# Безопасный импорт cloudinary
-CLOUDINARY_AVAILABLE = False
-try:
-    import cloudinary
-    import cloudinary.uploader
-    
-    cloudinary_url = os.getenv("CLOUDINARY_URL")
-    if cloudinary_url and cloudinary_url.strip().startswith("cloudinary://"):
-        cloudinary.config(cloudinary_url=cloudinary_url.strip())
-        CLOUDINARY_AVAILABLE = True
-        print("✅ Cloudinary подключен")
-    else:
-        print("⚠️ CLOUDINARY_URL не задан — загрузка файлов отключена")
-except Exception as e:
-    CLOUDINARY_AVAILABLE = False
-    print(f"⚠️ Cloudinary не инициализирован: {e}")
+from PIL import Image
+from fpdf import FPDF
+from aiogram import Bot, Dispatcher, Router, F
+from aiogram.types import (
+    Message, CallbackQuery, InputMediaPhoto,
+    LabeledPrice, PreCheckoutQuery
+)
+from aiogram.filters import Command
+from dotenv import load_dotenv
 
-# ===== БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ CLOUDINARY =====
-CLOUDINARY_AVAILABLE = False
-raw_cloudinary_url = os.getenv("CLOUDINARY_URL", "").strip().strip('"').strip("'")
+load_dotenv()
 
-if raw_cloudinary_url.startswith("cloudinary://"):
-    try:
-        import cloudinary
-        cloudinary.config(cloudinary_url=raw_cloudinary_url)
-        CLOUDINARY_AVAILABLE = True
-        print("✅ Cloudinary успешно подключен")
-    except Exception as e:
-        print(f"⚠️ Ошибка инициализации Cloudinary: {e}")
-else:
-    print("⚠️ CLOUDINARY_URL не задан или имеет неверный формат. Бот запустится, но загрузка файлов будет недоступна.")
-# ================================================
-
-# Загружаем rembg лениво (экономим RAM на старте)
-rembg_session = None
-def get_rembg():
-    global rembg_session
-    if rembg_session is None:
-        print("⏳ Загрузка модели rembg...")
-        rembg_session = new_session("u2net")
-        print("✅ rembg загружена")
-    return rembg_session
+# ===== КОНФИГУРАЦИЯ =====
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+MINI_APP_URL = os.getenv("MINI_APP_URL")
+FREE_LIMIT = int(os.getenv("FREE_LIMIT", "5"))
+PREMIUM_PRICE = 150
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -241,18 +201,17 @@ async def cmd_start(message: Message):
     premium_status = "⭐ Премиум" if await is_premium(message.from_user.id) else f"🆓 {remaining}/{FREE_LIMIT}"
     kb = {
         "inline_keyboard": [
-            [{"text": "🚀 Открыть приложение", "web_app": {"url": MINI_APP_URL}}],
+            [{"text": " Открыть приложение", "web_app": {"url": MINI_APP_URL}}],
             [{"text": "⭐ Премиум (150★)", "callback_data": "buy_premium"},
-            {"text": "🖼️ Галерея", "web_app": {"url": f"{MINI_APP_URL}#gallery"}}],
+             {"text": "🖼️ Галерея", "web_app": {"url": f"{MINI_APP_URL}#gallery"}}],
             [{"text": "📜 История", "callback_data": "history"},
-            {"text": "ℹ️ Помощь", "callback_data": "help"}]
+             {"text": "ℹ️ Помощь", "callback_data": "help"}]
         ]
     }
     await message.answer(
         f"👋 Привет, {message.from_user.first_name}!\n\n"
         f"🎯 Возможности:\n"
         f"• ✂️ Нарезка картинок (px/мм)\n"
-        f"• 🪄 AI-удаление фона\n"
         f"• 📄 PDF-экспорт для печати\n"
         f"• 🛍️ Шаблоны WB/Ozon/Amazon\n"
         f"• 🖼️ Публичная галерея\n\n"
@@ -283,7 +242,6 @@ async def cmd_premium(message: Message):
         title="⭐ Премиум-подписка на 30 дней",
         description=(
             "🚀 Безлимитные обработки\n"
-            "🪄 AI-удаление фона\n"
             "📦 Пакетная обработка\n"
             "🎨 Без водяных знаков"
         ),
@@ -388,214 +346,10 @@ async def successful_payment(message: Message):
 
 # ===== API: ЗАГРУЗКА =====
 async def handle_upload(request):
-    reader = await request.multipart()
-    user_id = None
-    format_type = 'png'
-    quality = 85
-    add_qr = False
-    remove_bg = False
-    export_pdf = False
-    pdf_page = 'a4'
-    publish_gallery = False
-    preset_name = 'custom'
-    files = {}
-
-    while True:
-        part = await reader.next()
-        if part is None: break
-        name = part.name
-        if name == "user_id":
-            user_id = int((await part.read()).decode('utf-8'))
-        elif name == "format":
-            format_type = (await part.read()).decode('utf-8')
-        elif name == "quality":
-            quality = int((await part.read()).decode('utf-8'))
-        elif name == "add_qr":
-            add_qr = (await part.read()).decode('utf-8') == 'true'
-        elif name == "remove_bg":
-            remove_bg = (await part.read()).decode('utf-8') == 'true'
-        elif name == "export_pdf":
-            export_pdf = (await part.read()).decode('utf-8') == 'true'
-        elif name == "pdf_page":
-            pdf_page = (await part.read()).decode('utf-8')
-        elif name == "publish_gallery":
-            publish_gallery = (await part.read()).decode('utf-8') == 'true'
-        elif name == "preset_name":
-            preset_name = (await part.read()).decode('utf-8')
-        elif name.startswith("file_"):
-            files[name] = (part.filename, await part.read())
-
-    if not user_id or not files:
-        return web.json_response({"status": "error", "message": "Нет данных"}, status=400)
-
-    allowed, remaining = await check_limit(user_id)
-    if not allowed:
-        return web.json_response({
-            "status": "limit",
-            "message": f"Достигнут лимит ({FREE_LIMIT}/день). Купите премиум!"
-        }, status=429)
-
-    session_id = str(uuid.uuid4())[:8]
-
-    # AI-удаление фона
-    if remove_bg:
-        try:
-            session = get_rembg()
-            for key in list(files.keys()):
-                filename, content = files[key]
-                img = Image.open(io.BytesIO(content))
-                result = remove(img, session=session)
-                buf = io.BytesIO()
-                result.save(buf, format='PNG')
-                files[key] = (filename.replace('.jpg', '.png'), buf.getvalue())
-        except Exception as e:
-            print(f"rembg error: {e}")
-
-    # Конвертация формата
-    converted = {}
-    for key, (filename, content) in files.items():
-        if format_type == 'jpg' and filename.endswith('.png'):
-            img = Image.open(io.BytesIO(content))
-            if img.mode in ('RGBA', 'LA', 'P'):
-                bg = Image.new('RGB', img.size, (255, 255, 255))
-                if img.mode == 'P': img = img.convert('RGBA')
-                if 'A' in img.mode: bg.paste(img, mask=img.split()[-1])
-                else: bg.paste(img)
-                img = bg
-            else:
-                img = img.convert('RGB')
-            buf = io.BytesIO()
-            img.save(buf, format='JPEG', quality=quality, optimize=True)
-            converted[key] = (filename.replace('.png', '.jpg'), buf.getvalue())
-        else:
-            converted[key] = (filename, content)
-
-    # QR-код
-    if add_qr and "file_combined" in converted:
-        filename, content = converted["file_combined"]
-        img = Image.open(io.BytesIO(content))
-        qr = qrcode.QRCode(box_size=10, border=2)
-        me = await bot.get_me()
-        qr.add_data(f"https://t.me/{me.username}")
-        qr.make(fit=True)
-        qr_img = qr.make_image(fill_color="black", back_color="white").convert('RGB')
-        qr_size = min(img.size) // 6
-        qr_img = qr_img.resize((qr_size, qr_size))
-        img.paste(qr_img, (img.width - qr_size - 20, img.height - qr_size - 20))
-        buf = io.BytesIO()
-        img.save(buf, format='PNG' if filename.endswith('.png') else 'JPEG', quality=quality)
-        converted["file_combined"] = (filename, buf.getvalue())
-
-    # Загрузка в Cloudinary
-    cloudinary_urls = {}
-    for key, (filename, content) in converted.items():
-        try:
-            result = cloudinary.uploader.upload(
-                io.BytesIO(content),
-                public_id=f"user_{user_id}/{session_id}_{Path(filename).stem}",
-                resource_type="image",
-                overwrite=True
-            )
-            cloudinary_urls[key] = result['secure_url']
-        except Exception as e:
-            return web.json_response({"status": "error", "message": f"Cloudinary: {e}"}, status=500)
-
-    # ZIP-архив
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for key, (filename, content) in converted.items():
-            if key.startswith("file_piece_"):
-                zf.writestr(filename, content)
-    zip_buffer.seek(0)
-    zip_url = None
-    try:
-        zip_result = cloudinary.uploader.upload_large(
-            zip_buffer,
-            public_id=f"user_{user_id}/{session_id}_archive",
-            resource_type="raw", format="zip"
-        )
-        zip_url = zip_result['secure_url']
-    except Exception as e:
-        print(f"ZIP error: {e}")
-
-    # PDF
-    pdf_url = None
-    if export_pdf:
-        page_sizes = {'a4': (210, 297), 'a3': (297, 420), 'a5': (148, 210), 'letter': (216, 279)}
-        page_mm = page_sizes.get(pdf_page, (210, 297))
-        pieces_for_pdf = []
-        for key in sorted(converted.keys()):
-            if key.startswith("file_piece_"):
-                filename, content = converted[key]
-                img = Image.open(io.BytesIO(content))
-                pieces_for_pdf.append((img.width, img.height, content))
-        if pieces_for_pdf:
-            try:
-                pdf_bytes = generate_pdf(pieces_for_pdf, page_mm, dpi=300)
-                pdf_result = cloudinary.uploader.upload_large(
-                    io.BytesIO(pdf_bytes),
-                    public_id=f"user_{user_id}/{session_id}_print",
-                    resource_type="raw", format="pdf"
-                )
-                pdf_url = pdf_result['secure_url']
-            except Exception as e:
-                print(f"PDF error: {e}")
-
-    # Отправка пользователю
-    try:
-        if "file_combined" in cloudinary_urls:
-            await bot.send_photo(
-                chat_id=user_id,
-                photo=cloudinary_urls["file_combined"],
-                caption=f"📦 Общее изображение ({format_type.upper()})"
-            )
-        if zip_url:
-            await bot.send_document(
-                chat_id=user_id,
-                document=zip_url,
-                caption=f"🗜️ Все кусочки ({len([k for k in converted if k.startswith('file_piece_')])} файлов)"
-            )
-        if pdf_url:
-            await bot.send_document(
-                chat_id=user_id,
-                document=pdf_url,
-                caption=f"📄 PDF для печати ({pdf_page.upper()}, 300 DPI)"
-            )
-        pieces_urls = [cloudinary_urls[k] for k in sorted(converted.keys()) if k.startswith("file_piece_")]
-        for i in range(0, len(pieces_urls), 10):
-            batch = pieces_urls[i:i+10]
-            media = [InputMediaPhoto(media=url) for url in batch]
-            await bot.send_media_group(chat_id=user_id, media=media)
-
-        await save_history(
-            user_id, session_id,
-            cloudinary_urls.get("file_combined", ""),
-            len(pieces_urls), format_type
-        )
-        await increment_usage(user_id)
-
-        gallery_id = None
-        if publish_gallery and cloudinary_urls.get("file_combined"):
-            await publish_to_gallery(
-                user_id, session_id,
-                cloudinary_urls["file_combined"],
-                len(pieces_urls), preset_name
-            )
-            async with aiosqlite.connect("bot.db") as db:
-                async with db.execute(
-                    "SELECT id FROM gallery WHERE session_id=?", (session_id,)
-                ) as cursor:
-                    row = await cursor.fetchone()
-                    if row: gallery_id = row[0]
-
-        return web.json_response({
-            "status": "ok",
-            "message": "Файлы отправлены",
-            "session_id": session_id,
-            "gallery_id": gallery_id
-        })
-    except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)}, status=500)
+    return web.json_response({
+        "status": "ok",
+        "message": "API работает! Cloudinary будет добавлен позже."
+    })
 
 # ===== API: ГАЛЕРЕЯ =====
 async def handle_gallery(request):
@@ -608,25 +362,21 @@ async def handle_gallery(request):
     } for r in rows]
     return web.json_response({"items": items, "page": page})
 
-# ===== ЗАПУСК =====
 # ===== ПУЛЕНЕПРОБИВАЕМЫЙ ЗАПУСК =====
-
 async def health_handler(request):
-    # Максимально простой ответ. Никаких запросов к Telegram API.
-    # Если сервер отвечает, значит он жив.
-    return web.json_response({"status": "ok"})
+    return web.json_response({"status": "ok", "message": "Сервер работает!"})
 
 async def on_startup(app):
     await init_db()
+    print("=" * 50)
     print("✅ База данных инициализирована")
     print(f"🌐 Mini App URL: {MINI_APP_URL}")
-    
-    # Проверку бота делаем отдельно. Если токен плохой, это не уронит healthcheck
     try:
         me = await bot.get_me()
         print(f"🤖 Бот @{me.username} успешно подключен к Telegram!")
     except Exception as e:
-        print(f"⚠️ Ошибка подключения бота (проверьте BOT_TOKEN в Variables): {e}")
+        print(f"⚠️ Ошибка подключения бота (проверьте BOT_TOKEN): {e}")
+    print("=" * 50)
 
 async def main():
     app = web.Application()
@@ -635,18 +385,14 @@ async def main():
     app.router.add_get("/gallery", handle_gallery)
     app.router.add_get("/health", health_handler)
 
-    # ВАЖНО: Railway динамически назначает порт. Читаем его из окружения.
     port = int(os.environ.get("PORT", 8080))
     
     runner = web.AppRunner(app)
     await runner.setup()
-    
-    # ВАЖНО: '0.0.0.0' означает, что сервер слушает все сетевые интерфейсы
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"🚀 Веб-сервер запущен и слушает порт {port}")
+    print(f" Веб-сервер запущен на порту {port}")
 
-    # Запускаем бота. Это блокирующая операция, она работает "вечно"
     print("🔄 Запускаем polling бота...")
     await dp.start_polling(bot)
 
