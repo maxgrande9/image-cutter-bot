@@ -346,7 +346,7 @@ async def main():
     app = web.Application()
     app.on_startup.append(on_startup)
     
-    # Добавляем CORS-заголовки для всех ответов
+    # === ЭТОТ БЛОК ОБЯЗАТЕЛЕН ДЛЯ РАБОТЫ С NETLIFY ===
     async def cors_middleware(app, handler):
         async def middleware(request):
             response = await handler(request)
@@ -357,6 +357,7 @@ async def main():
         return middleware
     
     app.middlewares.append(cors_middleware)
+    # ==================================================
     
     app.router.add_post("/upload", handle_upload)
     app.router.add_get("/gallery", handle_gallery)
