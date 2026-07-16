@@ -17,7 +17,7 @@ try:
     # Проверяем, задана ли переменная
     cloudinary_url = os.getenv("CLOUDINARY_URL")
     if cloudinary_url and cloudinary_url.strip().startswith("cloudinary://"):
-              CLOUDINARY_AVAILABLE = True
+            CLOUDINARY_AVAILABLE = True
         print("✅ Cloudinary подключен")
     else:
         print("️ CLOUDINARY_URL не задан — загрузка файлов отключена")
@@ -243,9 +243,9 @@ async def cmd_start(message: Message):
         "inline_keyboard": [
             [{"text": "🚀 Открыть приложение", "web_app": {"url": MINI_APP_URL}}],
             [{"text": "⭐ Премиум (150★)", "callback_data": "buy_premium"},
-             {"text": "🖼️ Галерея", "web_app": {"url": f"{MINI_APP_URL}#gallery"}}],
+            {"text": "🖼️ Галерея", "web_app": {"url": f"{MINI_APP_URL}#gallery"}}],
             [{"text": "📜 История", "callback_data": "history"},
-             {"text": "ℹ️ Помощь", "callback_data": "help"}]
+            {"text": "ℹ️ Помощь", "callback_data": "help"}]
         ]
     }
     await message.answer(
