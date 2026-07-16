@@ -8,8 +8,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from aiohttp import web
 import aiosqlite
-import cloudinary
-import cloudinary.uploader
 from PIL import Image
 from fpdf import FPDF
 from aiogram import Bot, Dispatcher, Router, F
@@ -24,22 +22,12 @@ load_dotenv()
 
 # ===== КОНФИГУРАЦИЯ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CLOUDINARY_URL = os.getenv("CLOUDINARY_URL")
 MINI_APP_URL = os.getenv("MINI_APP_URL")
 FREE_LIMIT = int(os.getenv("FREE_LIMIT", "5"))
 PREMIUM_PRICE = 150
 
-# Безопасная инициализация Cloudinary
+# Cloudinary НЕ импортируется здесь, чтобы не крашить старт!
 CLOUDINARY_AVAILABLE = False
-if CLOUDINARY_URL and CLOUDINARY_URL.strip().startswith("cloudinary://"):
-    try:
-        cloudinary.config(cloudinary_url=CLOUDINARY_URL.strip())
-        CLOUDINARY_AVAILABLE = True
-        print("✅ Cloudinary подключен")
-    except Exception as e:
-        print(f"⚠️ Cloudinary не инициализирован: {e}")
-else:
-    print("⚠️ CLOUDINARY_URL не задан или неверный формат")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -52,12 +40,9 @@ async def init_db():
         await db.execute("""
             CREATE TABLE IF NOT EXISTS history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                session_id TEXT,
+                user_id INTEGER, session_id TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                combined_url TEXT,
-                pieces_count INTEGER,
-                format_type TEXT
+                combined_url TEXT, pieces_count INTEGER, format_type TEXT
             )
         """)
         await db.execute("""
@@ -86,42 +71,29 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS subscriptions (
                 user_id INTEGER PRIMARY KEY,
                 expires_at TIMESTAMP,
-                telegram_charge_id TEXT,
-                provider_charge_id TEXT
+                telegram_charge_id TEXT, provider_charge_id TEXT
             )
         """)
         await db.commit()
 
 async def check_limit(user_id: int):
     today = datetime.now().date().isoformat()
-    if await is_premium(user_id):
-        return True, 999
+    if await is_premium(user_id): return True, 999
     async with aiosqlite.connect("bot.db") as db:
-        async with db.execute(
-            "SELECT count FROM usage WHERE user_id=? AND date=?",
-            (user_id, today)
-        ) as cursor:
+        async with db.execute("SELECT count FROM usage WHERE user_id=? AND date=?", (user_id, today)) as cursor:
             row = await cursor.fetchone()
-            count = row[0] if row else 0
-            return count < FREE_LIMIT, FREE_LIMIT - count
+            return (row[0] if row else 0) < FREE_LIMIT, FREE_LIMIT - (row[0] if row else 0)
 
 async def increment_usage(user_id: int):
-    if await is_premium(user_id):
-        return
+    if await is_premium(user_id): return
     today = datetime.now().date().isoformat()
     async with aiosqlite.connect("bot.db") as db:
-        await db.execute(
-            "INSERT INTO usage (user_id, date, count) VALUES (?, ?, 1) "
-            "ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1",
-            (user_id, today)
-        )
+        await db.execute("INSERT INTO usage (user_id, date, count) VALUES (?, ?, 1) ON CONFLICT(user_id, date) DO UPDATE SET count = count + 1", (user_id, today))
         await db.commit()
 
 async def is_premium(user_id: int) -> bool:
     async with aiosqlite.connect("bot.db") as db:
-        async with db.execute(
-            "SELECT expires_at FROM subscriptions WHERE user_id=?", (user_id,)
-        ) as cursor:
+        async with db.execute("SELECT expires_at FROM subscriptions WHERE user_id=?", (user_id,)) as cursor:
             row = await cursor.fetchone()
             if not row: return False
             return datetime.fromisoformat(row[0]) > datetime.now()
@@ -129,43 +101,27 @@ async def is_premium(user_id: int) -> bool:
 async def activate_premium(user_id: int, charge_id: str, provider_id: str):
     expires = (datetime.now() + timedelta(days=30)).isoformat()
     async with aiosqlite.connect("bot.db") as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO subscriptions VALUES (?, ?, ?, ?)",
-            (user_id, expires, charge_id, provider_id)
-        )
+        await db.execute("INSERT OR REPLACE INTO subscriptions VALUES (?, ?, ?, ?)", (user_id, expires, charge_id, provider_id))
         await db.commit()
 
 async def save_history(user_id, session_id, combined_url, pieces_count, format_type):
     async with aiosqlite.connect("bot.db") as db:
-        await db.execute(
-            "INSERT INTO history VALUES (NULL, ?, ?, ?, ?, ?, ?)",
-            (user_id, session_id, combined_url, pieces_count, format_type)
-        )
+        await db.execute("INSERT INTO history VALUES (NULL, ?, ?, ?, ?, ?, ?)", (user_id, session_id, combined_url, pieces_count, format_type))
         await db.commit()
 
 async def publish_to_gallery(user_id, session_id, preview_url, pieces_count, preset_name):
     async with aiosqlite.connect("bot.db") as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO gallery (user_id, session_id, preview_url, pieces_count, preset_name) VALUES (?, ?, ?, ?, ?)",
-            (user_id, session_id, preview_url, pieces_count, preset_name)
-        )
+        await db.execute("INSERT OR REPLACE INTO gallery (user_id, session_id, preview_url, pieces_count, preset_name) VALUES (?, ?, ?, ?, ?)", (user_id, session_id, preview_url, pieces_count, preset_name))
         await db.commit()
 
 async def get_gallery(page=0, per_page=12):
     async with aiosqlite.connect("bot.db") as db:
-        async with db.execute(
-            "SELECT id, session_id, preview_url, pieces_count, preset_name, likes, created_at "
-            "FROM gallery WHERE is_active=1 ORDER BY likes DESC, created_at DESC LIMIT ? OFFSET ?",
-            (per_page, page * per_page)
-        ) as cursor:
+        async with db.execute("SELECT id, session_id, preview_url, pieces_count, preset_name, likes, created_at FROM gallery WHERE is_active=1 ORDER BY likes DESC, created_at DESC LIMIT ? OFFSET ?", (per_page, page * per_page)) as cursor:
             return await cursor.fetchall()
 
 async def toggle_like(user_id, gallery_id):
     async with aiosqlite.connect("bot.db") as db:
-        async with db.execute(
-            "SELECT 1 FROM gallery_likes WHERE user_id=? AND gallery_id=?",
-            (user_id, gallery_id)
-        ) as cursor:
+        async with db.execute("SELECT 1 FROM gallery_likes WHERE user_id=? AND gallery_id=?", (user_id, gallery_id)) as cursor:
             already = await cursor.fetchone()
         if already:
             await db.execute("DELETE FROM gallery_likes WHERE user_id=? AND gallery_id=?", (user_id, gallery_id))
@@ -177,10 +133,8 @@ async def toggle_like(user_id, gallery_id):
             liked = True
         await db.commit()
         async with db.execute("SELECT likes FROM gallery WHERE id=?", (gallery_id,)) as cursor:
-            row = await cursor.fetchone()
-            return liked, row[0]
+            return liked, (await cursor.fetchone())[0]
 
-# ===== PDF-ГЕНЕРАЦИЯ =====
 def generate_pdf(images_data, page_size_mm, dpi=300):
     pdf = FPDF(unit='mm', format=(page_size_mm[0], page_size_mm[1]))
     pdf.set_auto_page_break(False)
@@ -188,15 +142,13 @@ def generate_pdf(images_data, page_size_mm, dpi=300):
     pdf.add_page()
     margin, gap = 5, 2
     usable_w = page_size_mm[0] - 2 * margin
-    first_w, _, _ = images_data[0]
-    item_w_mm = first_w / px_per_mm
-    item_h_mm = images_data[0][1] / px_per_mm
+    first_w, first_h, _ = images_data[0]
+    item_w_mm, item_h_mm = first_w / px_per_mm, first_h / px_per_mm
     cols = max(1, int((usable_w + gap) / (item_w_mm + gap)))
     x, y, col_idx = margin, margin, 0
     for img_w, img_h, content in images_data:
         tmp_path = f"/tmp/pdf_{uuid.uuid4().hex}.png"
-        with open(tmp_path, 'wb') as f:
-            f.write(content)
+        with open(tmp_path, 'wb') as f: f.write(content)
         pdf.image(tmp_path, x=x, y=y, w=img_w/px_per_mm, h=img_h/px_per_mm)
         os.unlink(tmp_path)
         col_idx += 1
@@ -215,106 +167,49 @@ def generate_pdf(images_data, page_size_mm, dpi=300):
 async def cmd_start(message: Message):
     allowed, remaining = await check_limit(message.from_user.id)
     premium_status = "⭐ Премиум" if await is_premium(message.from_user.id) else f"🆓 {remaining}/{FREE_LIMIT}"
-    kb = {
-        "inline_keyboard": [
-            [{"text": "🚀 Открыть приложение", "web_app": {"url": MINI_APP_URL}}],
-            [{"text": "⭐ Премиум (150★)", "callback_data": "buy_premium"},
-             {"text": "🖼️ Галерея", "web_app": {"url": f"{MINI_APP_URL}#gallery"}}],
-            [{"text": "📜 История", "callback_data": "history"},
-             {"text": "ℹ️ Помощь", "callback_data": "help"}]
-        ]
-    }
-    await message.answer(
-        f" Привет, {message.from_user.first_name}!\n\n"
-        f"🎯 Возможности:\n"
-        f"• ✂️ Нарезка картинок (px/мм)\n"
-        f"• 📄 PDF-экспорт для печати\n"
-        f"• 🛍️ Шаблоны WB/Ozon/Amazon\n"
-        f"• 🖼️ Публичная галерея\n"
-        f"• 📦 Загрузка в Cloudinary\n\n"
-        f"📊 Статус: <b>{premium_status}</b>",
-        reply_markup=kb
-    )
+    kb = {"inline_keyboard": [
+        [{"text": "🚀 Открыть приложение", "web_app": {"url": MINI_APP_URL}}],
+        [{"text": "⭐ Премиум (150★)", "callback_data": "buy_premium"}, {"text": "🖼️ Галерея", "web_app": {"url": f"{MINI_APP_URL}#gallery"}}],
+        [{"text": "📜 История", "callback_data": "history"}, {"text": "ℹ️ Помощь", "callback_data": "help"}]
+    ]}
+    await message.answer(f"👋 Привет, {message.from_user.first_name}!\n\n🎯 Возможности:\n• ✂️ Нарезка картинок\n• 📄 PDF-экспорт\n• 🛍️ Шаблоны маркетплейсов\n\n📊 Статус: <b>{premium_status}</b>", reply_markup=kb)
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
-    await message.answer(
-        "🛠️ <b>Команды:</b>\n"
-        "/start - Главное меню\n"
-        "/premium - Купить подписку\n"
-        "/history - История обработок\n"
-        "/stats - Ваша статистика\n\n"
-        "💡 <b>Советы:</b>\n"
-        "• Используйте пресеты для быстрого старта\n"
-        "• Включите JPG для экономии трафика\n"
-        "• Отмечайте «В галерею» чтобы поделиться работой"
-    )
+    await message.answer("🛠️ <b>Команды:</b>\n/start - Меню\n/premium - Подписка\n/history - История\n/stats - Статистика")
 
 @router.message(Command("premium"))
 async def cmd_premium(message: Message):
     if await is_premium(message.from_user.id):
         await message.answer("✅ У вас уже активна премиум-подписка!")
         return
-    await message.answer_invoice(
-        title="⭐ Премиум-подписка на 30 дней",
-        description=(
-            "🚀 Безлимитные обработки\n"
-            "📦 Пакетная обработка\n"
-            "🎨 Без водяных знаков"
-        ),
-        prices=[LabeledPrice(label="Премиум", amount=PREMIUM_PRICE * 100)],
-        provider_token="",
-        payload=f"premium_{message.from_user.id}",
-        currency="XTR"
-    )
+    await message.answer_invoice(title="⭐ Премиум на 30 дней", description="Безлимит + все функции", prices=[LabeledPrice(label="Премиум", amount=PREMIUM_PRICE * 100)], provider_token="", payload=f"premium_{message.from_user.id}", currency="XTR")
 
 @router.message(Command("stats"))
 async def cmd_stats(message: Message):
     async with aiosqlite.connect("bot.db") as db:
-        async with db.execute(
-            "SELECT COUNT(*), COALESCE(SUM(pieces_count), 0) FROM history WHERE user_id=?",
-            (message.from_user.id,)
-        ) as cursor:
+        async with db.execute("SELECT COUNT(*), COALESCE(SUM(pieces_count), 0) FROM history WHERE user_id=?", (message.from_user.id,)) as cursor:
             total, pieces = await cursor.fetchone()
-    premium = "⭐ ДА" if await is_premium(message.from_user.id) else "Нет"
-    await message.answer(
-        f"📊 <b>Ваша статистика:</b>\n\n"
-        f"🎨 Обработок: <b>{total or 0}</b>\n"
-        f"✂️ Кусочков: <b>{pieces or 0}</b>\n"
-        f"⭐ Премиум: <b>{premium}</b>"
-    )
+    await message.answer(f"📊 <b>Статистика:</b>\n🎨 Обработок: <b>{total or 0}</b>\n✂️ Кусочков: <b>{pieces or 0}</b>")
 
 @router.message(Command("history"))
 async def cmd_history(message: Message):
     async with aiosqlite.connect("bot.db") as db:
-        async with db.execute(
-            "SELECT combined_url, pieces_count, format_type, created_at "
-            "FROM history WHERE user_id=? ORDER BY created_at DESC LIMIT 5",
-            (message.from_user.id,)
-        ) as cursor:
+        async with db.execute("SELECT combined_url, pieces_count, format_type, created_at FROM history WHERE user_id=? ORDER BY created_at DESC LIMIT 5", (message.from_user.id,)) as cursor:
             rows = await cursor.fetchall()
     if not rows:
-        await message.answer(" История пуста.")
+        await message.answer("📭 История пуста.")
         return
-    text = "📜 <b>Последние обработки:</b>\n\n"
+    text = "📜 <b>История:</b>\n\n"
     kb = []
     for i, (url, count, fmt, date) in enumerate(rows, 1):
-        text += f"{i}. {count} кусочков ({fmt.upper()}) — {date[:10]}\n"
-        if url:
-            kb.append([{"text": f" #{i}", "url": url}])
+        text += f"{i}. {count} шт. ({fmt.upper()}) — {date[:10]}\n"
+        if url: kb.append([{"text": f"📥 #{i}", "url": url}])
     await message.answer(text, reply_markup={"inline_keyboard": kb})
 
-# ===== CALLBACK =====
 @router.callback_query(F.data == "buy_premium")
 async def cb_buy_premium(callback: CallbackQuery):
-    await callback.message.answer_invoice(
-        title="⭐ Премиум на 30 дней",
-        description="Безлимит + AI-функции",
-        prices=[LabeledPrice(label="Премиум", amount=PREMIUM_PRICE * 100)],
-        provider_token="",
-        payload=f"premium_{callback.from_user.id}",
-        currency="XTR"
-    )
+    await callback.message.answer_invoice(title="⭐ Премиум", description="30 дней безлимит", prices=[LabeledPrice(label="Премиум", amount=PREMIUM_PRICE * 100)], provider_token="", payload=f"premium_{callback.from_user.id}", currency="XTR")
     await callback.answer()
 
 @router.callback_query(F.data == "history")
@@ -333,13 +228,8 @@ async def cb_like(callback: CallbackQuery):
     liked, new_count = await toggle_like(callback.from_user.id, gallery_id)
     await callback.answer(f"{'❤️' if liked else '💔'} {new_count}")
     try:
-        await callback.message.edit_reply_markup(
-            reply_markup={"inline_keyboard": [[
-                {"text": f"{'❤️' if liked else '🤍'} {new_count}", "callback_data": f"like:{gallery_id}"}
-            ]]}
-        )
-    except:
-        pass
+        await callback.message.edit_reply_markup(reply_markup={"inline_keyboard": [[{"text": f"{'❤️' if liked else '🤍'} {new_count}", "callback_data": f"like:{gallery_id}"}]]})
+    except: pass
 
 @router.pre_checkout_query()
 async def process_pre_checkout(q: PreCheckoutQuery):
@@ -349,55 +239,55 @@ async def process_pre_checkout(q: PreCheckoutQuery):
 async def successful_payment(message: Message):
     payment = message.successful_payment
     if payment.invoice_payload.startswith("premium_"):
-        await activate_premium(
-            message.from_user.id,
-            payment.telegram_payment_charge_id,
-            payment.provider_payment_charge_id
-        )
-        await message.answer(
-            " <b>Добро пожаловать в премиум!</b>\n\n"
-            "✅ Подписка активна на 30 дней\n"
-            "✅ Все лимиты сняты\n"
-            "✅ AI-функции разблокированы"
-        )
+        await activate_premium(message.from_user.id, payment.telegram_payment_charge_id, payment.provider_payment_charge_id)
+        await message.answer("🎉 <b>Премиум активирован!</b>\n✅ 30 дней безлимитного доступа.")
 
-# ===== API: ЗАГРУЗКА =====
+# ===== API: ЗАГРУЗКА (БЕЗОПАСНЫЙ ИМПОРТ CLOUDINARY) =====
 async def handle_upload(request):
-    if not CLOUDINARY_AVAILABLE:
-        return web.json_response({
-            "status": "error",
-            "message": "Cloudinary не настроен. Добавьте переменную CLOUDINARY_URL в Railway."
-        }, status=500)
+    global CLOUDINARY_AVAILABLE
     
+    # 1. Проверяем и инициализируем Cloudinary ТОЛЬКО ЗДЕСЬ
+    if not CLOUDINARY_AVAILABLE:
+        cloudinary_url = os.getenv("CLOUDINARY_URL", "").strip().strip('"').strip("'")
+        if cloudinary_url and cloudinary_url.startswith("cloudinary://"):
+            try:
+                import cloudinary
+                import cloudinary.uploader
+                cloudinary.config(cloudinary_url=cloudinary_url)
+                CLOUDINARY_AVAILABLE = True
+                print("✅ Cloudinary подключен при первом запросе")
+            except Exception as e:
+                print(f"⚠️ Ошибка Cloudinary: {e}")
+                return web.json_response({"status": "error", "message": "Ошибка настройки Cloudinary"}, status=500)
+        else:
+            return web.json_response({
+                "status": "error",
+                "message": "CLOUDINARY_URL не задан в Railway. Добавьте переменную, начинающуюся с 'cloudinary://'"
+            }, status=500)
+
+    # 2. Чтение данных
     reader = await request.multipart()
     user_id = None
     format_type = 'png'
     quality = 85
-    add_qr = False
     files = {}
     
     while True:
         part = await reader.next()
         if part is None: break
         name = part.name
-        if name == "user_id":
-            user_id = int((await part.read()).decode('utf-8'))
-        elif name == "format":
-            format_type = (await part.read()).decode('utf-8')
-        elif name == "quality":
-            quality = int((await part.read()).decode('utf-8'))
-        elif name == "add_qr":
-            add_qr = (await part.read()).decode('utf-8') == 'true'
-        elif name.startswith("file_"):
-            files[name] = (part.filename, await part.read())
+        if name == "user_id": user_id = int((await part.read()).decode('utf-8'))
+        elif name == "format": format_type = (await part.read()).decode('utf-8')
+        elif name == "quality": quality = int((await part.read()).decode('utf-8'))
+        elif name.startswith("file_"): files[name] = (part.filename, await part.read())
 
     if not user_id or not files:
         return web.json_response({"status": "error", "message": "Нет данных"}, status=400)
 
     session_id = str(uuid.uuid4())[:8]
-
-    # Конвертация формата
     converted = {}
+    
+    # 3. Конвертация
     for key, (filename, content) in files.items():
         if format_type == 'jpg' and filename.endswith('.png'):
             img = Image.open(io.BytesIO(content))
@@ -415,165 +305,15 @@ async def handle_upload(request):
         else:
             converted[key] = (filename, content)
 
-    # QR-код
-    if add_qr and "file_combined" in converted:
-        filename, content = converted["file_combined"]
-        img = Image.open(io.BytesIO(content))
-        qr = qrcode.QRCode(box_size=10, border=2)
-        me = await bot.get_me()
-        qr.add_data(f"https://t.me/{me.username}")
-        qr.make(fit=True)
-        qr_img = qr.make_image(fill_color="black", back_color="white").convert('RGB')
-        qr_size = min(img.size) // 6
-        qr_img = qr_img.resize((qr_size, qr_size))
-        img.paste(qr_img, (img.width - qr_size - 20, img.height - qr_size - 20))
-        buf = io.BytesIO()
-        img.save(buf, format='PNG' if filename.endswith('.png') else 'JPEG', quality=quality)
-        converted["file_combined"] = (filename, buf.getvalue())
-
-    # Загрузка в Cloudinary
+    # 4. Загрузка в Cloudinary
+    import cloudinary.uploader # Теперь это безопасно
     cloudinary_urls = {}
     for key, (filename, content) in converted.items():
         try:
-            result = cloudinary.uploader.upload(
-                io.BytesIO(content),
-                public_id=f"user_{user_id}/{session_id}_{Path(filename).stem}",
-                resource_type="image",
-                overwrite=True
-            )
+            result = cloudinary.uploader.upload(io.BytesIO(content), public_id=f"user_{user_id}/{session_id}_{Path(filename).stem}", resource_type="image", overwrite=True)
             cloudinary_urls[key] = result['secure_url']
         except Exception as e:
             return web.json_response({"status": "error", "message": f"Cloudinary: {e}"}, status=500)
 
-    # ZIP-архив
-    zip_buffer = io.BytesIO()
-    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
-        for key, (filename, content) in converted.items():
-            if key.startswith("file_piece_"):
-                zf.writestr(filename, content)
-    zip_buffer.seek(0)
-    zip_url = None
-    try:
-        zip_result = cloudinary.uploader.upload_large(
-            zip_buffer,
-            public_id=f"user_{user_id}/{session_id}_archive",
-            resource_type="raw", format="zip"
-        )
-        zip_url = zip_result['secure_url']
-    except Exception as e:
-        print(f"ZIP error: {e}")
-
-    # PDF
-    pdf_url = None
-    page_sizes = {'a4': (210, 297), 'a3': (297, 420), 'a5': (148, 210), 'letter': (216, 279)}
-    pieces_for_pdf = []
-    for key in sorted(converted.keys()):
-        if key.startswith("file_piece_"):
-            filename, content = converted[key]
-            img = Image.open(io.BytesIO(content))
-            pieces_for_pdf.append((img.width, img.height, content))
-    if pieces_for_pdf:
-        try:
-            pdf_bytes = generate_pdf(pieces_for_pdf, page_sizes['a4'], dpi=300)
-            pdf_result = cloudinary.uploader.upload_large(
-                io.BytesIO(pdf_bytes),
-                public_id=f"user_{user_id}/{session_id}_print",
-                resource_type="raw", format="pdf"
-            )
-            pdf_url = pdf_result['secure_url']
-        except Exception as e:
-            print(f"PDF error: {e}")
-
-    # Отправка пользователю
-    try:
-        if "file_combined" in cloudinary_urls:
-            await bot.send_photo(
-                chat_id=user_id,
-                photo=cloudinary_urls["file_combined"],
-                caption=f"📦 Общее изображение ({format_type.upper()})"
-            )
-        if zip_url:
-            await bot.send_document(
-                chat_id=user_id,
-                document=zip_url,
-                caption=f"🗜️ Все кусочки ({len([k for k in converted if k.startswith('file_piece_')])} файлов)"
-            )
-        if pdf_url:
-            await bot.send_document(
-                chat_id=user_id,
-                document=pdf_url,
-                caption=f" PDF для печати (A4, 300 DPI)"
-            )
-        pieces_urls = [cloudinary_urls[k] for k in sorted(converted.keys()) if k.startswith("file_piece_")]
-        for i in range(0, len(pieces_urls), 10):
-            batch = pieces_urls[i:i+10]
-            media = [InputMediaPhoto(media=url) for url in batch]
-            await bot.send_media_group(chat_id=user_id, media=media)
-
-        await save_history(
-            user_id, session_id,
-            cloudinary_urls.get("file_combined", ""),
-            len(pieces_urls), format_type
-        )
-        await increment_usage(user_id)
-
-        gallery_id = None
-        # Публикация в галерею (если запрошено)
-        # publish_gallery передаётся из фронтенда
-
-        return web.json_response({
-            "status": "ok",
-            "message": "Файлы отправлены",
-            "session_id": session_id,
-            "gallery_id": gallery_id
-        })
-    except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)}, status=500)
-
-# ===== API: ГАЛЕРЕЯ =====
-async def handle_gallery(request):
-    page = int(request.query.get('page', 0))
-    rows = await get_gallery(page, 12)
-    items = [{
-        "id": r[0], "session_id": r[1], "preview_url": r[2],
-        "pieces_count": r[3], "preset_name": r[4],
-        "likes": r[5], "created_at": r[6]
-    } for r in rows]
-    return web.json_response({"items": items, "page": page})
-
-# ===== ЗАПУСК =====
-async def health_handler(request):
-    return web.json_response({"status": "ok"})
-
-async def on_startup(app):
-    await init_db()
-    print("=" * 50)
-    print("✅ База данных инициализирована")
-    print(f"🌐 Mini App URL: {MINI_APP_URL}")
-    try:
-        me = await bot.get_me()
-        print(f"🤖 Бот @{me.username} успешно подключен к Telegram!")
-    except Exception as e:
-        print(f"⚠️ Ошибка подключения бота: {e}")
-    print("=" * 50)
-
-async def main():
-    app = web.Application()
-    app.on_startup.append(on_startup)
-    app.router.add_post("/upload", handle_upload)
-    app.router.add_get("/gallery", handle_gallery)
-    app.router.add_get("/health", health_handler)
-
-    port = int(os.environ.get("PORT", 8080))
-    
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', port)
-    await site.start()
-    print(f"🚀 Веб-сервер запущен на порту {port}")
-
-    print("🔄 Запускаем polling бота...")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    # 5. ZIP и PDF (упрощенно)
+    zip_buffer = io.BytesIO
