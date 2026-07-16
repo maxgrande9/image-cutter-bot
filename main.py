@@ -1,4 +1,5 @@
 import os
+import sys
 import io
 import uuid
 import zipfile
@@ -18,7 +19,15 @@ from aiogram.types import (
 from aiogram.filters import Command
 from dotenv import load_dotenv
 
+# Принудительно отключаем буферизацию логов
+sys.stdout.reconfigure(line_buffering=True)
+sys.stderr.reconfigure(line_buffering=True)
+
+print("🚀 [1/5] ФАЙЛ main.py НАЧАЛ ЗАГРУЗКУ", flush=True)
+
 load_dotenv()
+
+print(" [2/5] Переменные окружения загружены", flush=True)
 
 # ===== КОНФИГУРАЦИЯ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -26,7 +35,11 @@ MINI_APP_URL = os.getenv("MINI_APP_URL")
 FREE_LIMIT = int(os.getenv("FREE_LIMIT", "5"))
 PREMIUM_PRICE = 150
 
-# Cloudinary НЕ импортируется здесь, чтобы не крашить старт!
+if not BOT_TOKEN:
+    print("❌ [ОШИБКА] BOT_TOKEN НЕ НАЙДЕН! Проверьте Variables в Railway.", flush=True)
+else:
+    print(f"✅ [2/5] BOT_TOKEN найден (длина: {len(BOT_TOKEN)})", flush=True)
+
 CLOUDINARY_AVAILABLE = False
 
 bot = Bot(token=BOT_TOKEN)
@@ -36,45 +49,15 @@ dp.include_router(router)
 
 # ===== БАЗА ДАННЫХ =====
 async def init_db():
+    print("🚀 [3/5] Инициализация базы данных...", flush=True)
     async with aiosqlite.connect("bot.db") as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER, session_id TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                combined_url TEXT, pieces_count INTEGER, format_type TEXT
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS usage (
-                user_id INTEGER, date TEXT, count INTEGER DEFAULT 0,
-                PRIMARY KEY (user_id, date)
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS gallery (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER, session_id TEXT UNIQUE,
-                preview_url TEXT, pieces_count INTEGER,
-                preset_name TEXT, likes INTEGER DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                is_active INTEGER DEFAULT 1
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS gallery_likes (
-                user_id INTEGER, gallery_id INTEGER,
-                PRIMARY KEY (user_id, gallery_id)
-            )
-        """)
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS subscriptions (
-                user_id INTEGER PRIMARY KEY,
-                expires_at TIMESTAMP,
-                telegram_charge_id TEXT, provider_charge_id TEXT
-            )
-        """)
+        await db.execute("""CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, session_id TEXT, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, combined_url TEXT, pieces_count INTEGER, format_type TEXT)""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS usage (user_id INTEGER, date TEXT, count INTEGER DEFAULT 0, PRIMARY KEY (user_id, date))""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS gallery (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, session_id TEXT UNIQUE, preview_url TEXT, pieces_count INTEGER, preset_name TEXT, likes INTEGER DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, is_active INTEGER DEFAULT 1)""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS gallery_likes (user_id INTEGER, gallery_id INTEGER, PRIMARY KEY (user_id, gallery_id))""")
+        await db.execute("""CREATE TABLE IF NOT EXISTS subscriptions (user_id INTEGER PRIMARY KEY, expires_at TIMESTAMP, telegram_charge_id TEXT, provider_charge_id TEXT)""")
         await db.commit()
+    print("✅ [3/5] База данных готова!", flush=True)
 
 async def check_limit(user_id: int):
     today = datetime.now().date().isoformat()
@@ -170,9 +153,9 @@ async def cmd_start(message: Message):
     kb = {"inline_keyboard": [
         [{"text": "🚀 Открыть приложение", "web_app": {"url": MINI_APP_URL}}],
         [{"text": "⭐ Премиум (150★)", "callback_data": "buy_premium"}, {"text": "🖼️ Галерея", "web_app": {"url": f"{MINI_APP_URL}#gallery"}}],
-        [{"text": "📜 История", "callback_data": "history"}, {"text": "ℹ️ Помощь", "callback_data": "help"}]
+        [{"text": " История", "callback_data": "history"}, {"text": "ℹ️ Помощь", "callback_data": "help"}]
     ]}
-    await message.answer(f"👋 Привет, {message.from_user.first_name}!\n\n🎯 Возможности:\n• ✂️ Нарезка картинок\n• 📄 PDF-экспорт\n• 🛍️ Шаблоны маркетплейсов\n\n📊 Статус: <b>{premium_status}</b>", reply_markup=kb)
+    await message.answer(f"👋 Привет, {message.from_user.first_name}!\n\n🎯 Возможности:\n• ✂️ Нарезка картинок\n• 📄 PDF-экспорт\n• ️ Шаблоны маркетплейсов\n\n📊 Статус: <b>{premium_status}</b>", reply_markup=kb)
 
 @router.message(Command("help"))
 async def cmd_help(message: Message):
@@ -242,11 +225,9 @@ async def successful_payment(message: Message):
         await activate_premium(message.from_user.id, payment.telegram_payment_charge_id, payment.provider_payment_charge_id)
         await message.answer("🎉 <b>Премиум активирован!</b>\n✅ 30 дней безлимитного доступа.")
 
-# ===== API: ЗАГРУЗКА (БЕЗОПАСНЫЙ ИМПОРТ CLOUDINARY) =====
+# ===== API: ЗАГРУЗКА =====
 async def handle_upload(request):
     global CLOUDINARY_AVAILABLE
-    
-    # 1. Проверяем и инициализируем Cloudinary ТОЛЬКО ЗДЕСЬ
     if not CLOUDINARY_AVAILABLE:
         cloudinary_url = os.getenv("CLOUDINARY_URL", "").strip().strip('"').strip("'")
         if cloudinary_url and cloudinary_url.startswith("cloudinary://"):
@@ -255,17 +236,13 @@ async def handle_upload(request):
                 import cloudinary.uploader
                 cloudinary.config(cloudinary_url=cloudinary_url)
                 CLOUDINARY_AVAILABLE = True
-                print("✅ Cloudinary подключен при первом запросе")
+                print("✅ Cloudinary подключен при первом запросе", flush=True)
             except Exception as e:
-                print(f"⚠️ Ошибка Cloudinary: {e}")
+                print(f"⚠️ Ошибка Cloudinary: {e}", flush=True)
                 return web.json_response({"status": "error", "message": "Ошибка настройки Cloudinary"}, status=500)
         else:
-            return web.json_response({
-                "status": "error",
-                "message": "CLOUDINARY_URL не задан в Railway. Добавьте переменную, начинающуюся с 'cloudinary://'"
-            }, status=500)
+            return web.json_response({"status": "error", "message": "CLOUDINARY_URL не задан в Railway."}, status=500)
 
-    # 2. Чтение данных
     reader = await request.multipart()
     user_id = None
     format_type = 'png'
@@ -287,7 +264,6 @@ async def handle_upload(request):
     session_id = str(uuid.uuid4())[:8]
     converted = {}
     
-    # 3. Конвертация
     for key, (filename, content) in files.items():
         if format_type == 'jpg' and filename.endswith('.png'):
             img = Image.open(io.BytesIO(content))
@@ -305,8 +281,7 @@ async def handle_upload(request):
         else:
             converted[key] = (filename, content)
 
-    # 4. Загрузка в Cloudinary
-    import cloudinary.uploader # Теперь это безопасно
+    import cloudinary.uploader
     cloudinary_urls = {}
     for key, (filename, content) in converted.items():
         try:
@@ -315,5 +290,79 @@ async def handle_upload(request):
         except Exception as e:
             return web.json_response({"status": "error", "message": f"Cloudinary: {e}"}, status=500)
 
-    # 5. ZIP и PDF (упрощенно)
-    zip_buffer = io.BytesIO
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for key, (filename, content) in converted.items():
+            if key.startswith("file_piece_"): zf.writestr(filename, content)
+    zip_buffer.seek(0)
+    zip_url = None
+    try:
+        zip_result = cloudinary.uploader.upload_large(zip_buffer, public_id=f"user_{user_id}/{session_id}_archive", resource_type="raw", format="zip")
+        zip_url = zip_result['secure_url']
+    except: pass
+
+    try:
+        if "file_combined" in cloudinary_urls:
+            await bot.send_photo(chat_id=user_id, photo=cloudinary_urls["file_combined"], caption=f"📦 Общее изображение ({format_type.upper()})")
+        if zip_url:
+            await bot.send_document(chat_id=user_id, document=zip_url, caption=f"🗜️ Архив с кусочками")
+        
+        pieces_urls = [cloudinary_urls[k] for k in sorted(converted.keys()) if k.startswith("file_piece_")]
+        for i in range(0, len(pieces_urls), 10):
+            await bot.send_media_group(chat_id=user_id, media=[InputMediaPhoto(media=url) for url in pieces_urls[i:i+10]])
+
+        await save_history(user_id, session_id, cloudinary_urls.get("file_combined", ""), len(pieces_urls), format_type)
+        await increment_usage(user_id)
+
+        return web.json_response({"status": "ok", "message": "Файлы отправлены", "session_id": session_id})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+# ===== API: ГАЛЕРЕЯ =====
+async def handle_gallery(request):
+    page = int(request.query.get('page', 0))
+    rows = await get_gallery(page, 12)
+    items = [{"id": r[0], "session_id": r[1], "preview_url": r[2], "pieces_count": r[3], "preset_name": r[4], "likes": r[5], "created_at": r[6]} for r in rows]
+    return web.json_response({"items": items, "page": page})
+
+# ===== ЗАПУСК =====
+async def health_handler(request):
+    return web.json_response({"status": "ok"})
+
+async def on_startup(app):
+    print("🚀 [4/5] Вызвана функция on_startup", flush=True)
+    await init_db()
+    print("=" * 50, flush=True)
+    print("✅ База данных инициализирована", flush=True)
+    print(f"🌐 Mini App URL: {MINI_APP_URL}", flush=True)
+    try:
+        me = await bot.get_me()
+        print(f"🤖 Бот @{me.username} успешно подключен!", flush=True)
+    except Exception as e:
+        print(f"❌ Ошибка подключения бота (проверьте BOT_TOKEN): {e}", flush=True)
+    print("=" * 50, flush=True)
+
+async def main():
+    print(" [5/5] Запуск функции main()", flush=True)
+    app = web.Application()
+    app.on_startup.append(on_startup)
+    app.router.add_post("/upload", handle_upload)
+    app.router.add_get("/gallery", handle_gallery)
+    app.router.add_get("/health", health_handler)
+
+    # ВАЖНО: Берем порт из переменных Railway
+    port = int(os.environ.get("PORT", 8080))
+    print(f"🚀 [5/5] Попытка запустить сервер на 0.0.0.0:{port}", flush=True)
+    
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"✅ [5/5] Веб-сервер УСПЕШНО запущен на порту {port}!", flush=True)
+
+    print("🔄 Запускаем polling бота...", flush=True)
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    print("🚀 Блок __main__ выполнен, вызываем asyncio.run(main())", flush=True)
+    asyncio.run(main())
