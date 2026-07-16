@@ -586,24 +586,46 @@ async def handle_gallery(request):
     return web.json_response({"items": items, "page": page})
 
 # ===== ЗАПУСК =====
+# ===== НАДЁЖНЫЙ ЗАПУСК =====
+async def health_handler(request):
+    """Эндпоинт для проверки здоровья сервера Railway"""
+    try:
+        me = await bot.get_me()
+        return web.json_response({"status": "ok", "bot": me.username})
+    except Exception:
+        return web.json_response({"status": "ok"})
+
 async def on_startup(app):
     await init_db()
     print("✅ База данных инициализирована")
-    print(f"🤖 Бот @{(await bot.get_me()).username} запущен")
+    try:
+        me = await bot.get_me()
+        print(f"🤖 Бот @{me.username} запущен")
+    except:
+        print("🤖 Бот запущен")
     print(f"🌐 Mini App: {MINI_APP_URL}")
 
 async def main():
+    # 1. Настраиваем веб-сервер
     app = web.Application()
     app.on_startup.append(on_startup)
     app.router.add_post("/upload", handle_upload)
     app.router.add_get("/gallery", handle_gallery)
-    app.router.add_get("/health", lambda r: web.json_response({"status": "ok"}))
+    app.router.add_get("/health", health_handler)
 
+    # Railway автоматически передаёт порт в переменную PORT
     port = int(os.getenv("PORT", 8080))
-    await asyncio.gather(
-        dp.start_polling(bot),
-        web._run_app(app, host="0.0.0.0", port=port)
-    )
+    
+    # 2. Запускаем веб-сервер (AppRunner - официальный способ aiohttp)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, '0.0.0.0', port)
+    await site.start()
+    print(f"🌐 Веб-сервер успешно запущен на порту {port}")
+
+    # 3. Запускаем бота (это блокирующая операция, она будет работать вечно)
+    print("🔄 Запускаем polling бота...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
