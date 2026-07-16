@@ -3,10 +3,13 @@ import io
 import uuid
 import zipfile
 import asyncio
+import qrcode
 from datetime import datetime, timedelta
 from pathlib import Path
 from aiohttp import web
 import aiosqlite
+import cloudinary
+import cloudinary.uploader
 from PIL import Image
 from fpdf import FPDF
 from aiogram import Bot, Dispatcher, Router, F
@@ -21,9 +24,22 @@ load_dotenv()
 
 # ===== КОНФИГУРАЦИЯ =====
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+CLOUDINARY_URL = os.getenv("CLOUDINARY_URL")
 MINI_APP_URL = os.getenv("MINI_APP_URL")
 FREE_LIMIT = int(os.getenv("FREE_LIMIT", "5"))
 PREMIUM_PRICE = 150
+
+# Безопасная инициализация Cloudinary
+CLOUDINARY_AVAILABLE = False
+if CLOUDINARY_URL and CLOUDINARY_URL.strip().startswith("cloudinary://"):
+    try:
+        cloudinary.config(cloudinary_url=CLOUDINARY_URL.strip())
+        CLOUDINARY_AVAILABLE = True
+        print("✅ Cloudinary подключен")
+    except Exception as e:
+        print(f"⚠️ Cloudinary не инициализирован: {e}")
+else:
+    print("⚠️ CLOUDINARY_URL не задан или неверный формат")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -201,7 +217,7 @@ async def cmd_start(message: Message):
     premium_status = "⭐ Премиум" if await is_premium(message.from_user.id) else f"🆓 {remaining}/{FREE_LIMIT}"
     kb = {
         "inline_keyboard": [
-            [{"text": " Открыть приложение", "web_app": {"url": MINI_APP_URL}}],
+            [{"text": "🚀 Открыть приложение", "web_app": {"url": MINI_APP_URL}}],
             [{"text": "⭐ Премиум (150★)", "callback_data": "buy_premium"},
              {"text": "🖼️ Галерея", "web_app": {"url": f"{MINI_APP_URL}#gallery"}}],
             [{"text": "📜 История", "callback_data": "history"},
@@ -209,12 +225,13 @@ async def cmd_start(message: Message):
         ]
     }
     await message.answer(
-        f"👋 Привет, {message.from_user.first_name}!\n\n"
+        f" Привет, {message.from_user.first_name}!\n\n"
         f"🎯 Возможности:\n"
         f"• ✂️ Нарезка картинок (px/мм)\n"
         f"• 📄 PDF-экспорт для печати\n"
         f"• 🛍️ Шаблоны WB/Ozon/Amazon\n"
-        f"• 🖼️ Публичная галерея\n\n"
+        f"• 🖼️ Публичная галерея\n"
+        f"• 📦 Загрузка в Cloudinary\n\n"
         f"📊 Статус: <b>{premium_status}</b>",
         reply_markup=kb
     )
@@ -277,14 +294,14 @@ async def cmd_history(message: Message):
         ) as cursor:
             rows = await cursor.fetchall()
     if not rows:
-        await message.answer("📭 История пуста.")
+        await message.answer(" История пуста.")
         return
     text = "📜 <b>Последние обработки:</b>\n\n"
     kb = []
     for i, (url, count, fmt, date) in enumerate(rows, 1):
         text += f"{i}. {count} кусочков ({fmt.upper()}) — {date[:10]}\n"
         if url:
-            kb.append([{"text": f"📥 #{i}", "url": url}])
+            kb.append([{"text": f" #{i}", "url": url}])
     await message.answer(text, reply_markup={"inline_keyboard": kb})
 
 # ===== CALLBACK =====
@@ -338,7 +355,7 @@ async def successful_payment(message: Message):
             payment.provider_payment_charge_id
         )
         await message.answer(
-            "🎉 <b>Добро пожаловать в премиум!</b>\n\n"
+            " <b>Добро пожаловать в премиум!</b>\n\n"
             "✅ Подписка активна на 30 дней\n"
             "✅ Все лимиты сняты\n"
             "✅ AI-функции разблокированы"
@@ -346,10 +363,172 @@ async def successful_payment(message: Message):
 
 # ===== API: ЗАГРУЗКА =====
 async def handle_upload(request):
-    return web.json_response({
-        "status": "ok",
-        "message": "API работает! Cloudinary будет добавлен позже."
-    })
+    if not CLOUDINARY_AVAILABLE:
+        return web.json_response({
+            "status": "error",
+            "message": "Cloudinary не настроен. Добавьте переменную CLOUDINARY_URL в Railway."
+        }, status=500)
+    
+    reader = await request.multipart()
+    user_id = None
+    format_type = 'png'
+    quality = 85
+    add_qr = False
+    files = {}
+    
+    while True:
+        part = await reader.next()
+        if part is None: break
+        name = part.name
+        if name == "user_id":
+            user_id = int((await part.read()).decode('utf-8'))
+        elif name == "format":
+            format_type = (await part.read()).decode('utf-8')
+        elif name == "quality":
+            quality = int((await part.read()).decode('utf-8'))
+        elif name == "add_qr":
+            add_qr = (await part.read()).decode('utf-8') == 'true'
+        elif name.startswith("file_"):
+            files[name] = (part.filename, await part.read())
+
+    if not user_id or not files:
+        return web.json_response({"status": "error", "message": "Нет данных"}, status=400)
+
+    session_id = str(uuid.uuid4())[:8]
+
+    # Конвертация формата
+    converted = {}
+    for key, (filename, content) in files.items():
+        if format_type == 'jpg' and filename.endswith('.png'):
+            img = Image.open(io.BytesIO(content))
+            if img.mode in ('RGBA', 'LA', 'P'):
+                bg = Image.new('RGB', img.size, (255, 255, 255))
+                if img.mode == 'P': img = img.convert('RGBA')
+                if 'A' in img.mode: bg.paste(img, mask=img.split()[-1])
+                else: bg.paste(img)
+                img = bg
+            else:
+                img = img.convert('RGB')
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=quality, optimize=True)
+            converted[key] = (filename.replace('.png', '.jpg'), buf.getvalue())
+        else:
+            converted[key] = (filename, content)
+
+    # QR-код
+    if add_qr and "file_combined" in converted:
+        filename, content = converted["file_combined"]
+        img = Image.open(io.BytesIO(content))
+        qr = qrcode.QRCode(box_size=10, border=2)
+        me = await bot.get_me()
+        qr.add_data(f"https://t.me/{me.username}")
+        qr.make(fit=True)
+        qr_img = qr.make_image(fill_color="black", back_color="white").convert('RGB')
+        qr_size = min(img.size) // 6
+        qr_img = qr_img.resize((qr_size, qr_size))
+        img.paste(qr_img, (img.width - qr_size - 20, img.height - qr_size - 20))
+        buf = io.BytesIO()
+        img.save(buf, format='PNG' if filename.endswith('.png') else 'JPEG', quality=quality)
+        converted["file_combined"] = (filename, buf.getvalue())
+
+    # Загрузка в Cloudinary
+    cloudinary_urls = {}
+    for key, (filename, content) in converted.items():
+        try:
+            result = cloudinary.uploader.upload(
+                io.BytesIO(content),
+                public_id=f"user_{user_id}/{session_id}_{Path(filename).stem}",
+                resource_type="image",
+                overwrite=True
+            )
+            cloudinary_urls[key] = result['secure_url']
+        except Exception as e:
+            return web.json_response({"status": "error", "message": f"Cloudinary: {e}"}, status=500)
+
+    # ZIP-архив
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for key, (filename, content) in converted.items():
+            if key.startswith("file_piece_"):
+                zf.writestr(filename, content)
+    zip_buffer.seek(0)
+    zip_url = None
+    try:
+        zip_result = cloudinary.uploader.upload_large(
+            zip_buffer,
+            public_id=f"user_{user_id}/{session_id}_archive",
+            resource_type="raw", format="zip"
+        )
+        zip_url = zip_result['secure_url']
+    except Exception as e:
+        print(f"ZIP error: {e}")
+
+    # PDF
+    pdf_url = None
+    page_sizes = {'a4': (210, 297), 'a3': (297, 420), 'a5': (148, 210), 'letter': (216, 279)}
+    pieces_for_pdf = []
+    for key in sorted(converted.keys()):
+        if key.startswith("file_piece_"):
+            filename, content = converted[key]
+            img = Image.open(io.BytesIO(content))
+            pieces_for_pdf.append((img.width, img.height, content))
+    if pieces_for_pdf:
+        try:
+            pdf_bytes = generate_pdf(pieces_for_pdf, page_sizes['a4'], dpi=300)
+            pdf_result = cloudinary.uploader.upload_large(
+                io.BytesIO(pdf_bytes),
+                public_id=f"user_{user_id}/{session_id}_print",
+                resource_type="raw", format="pdf"
+            )
+            pdf_url = pdf_result['secure_url']
+        except Exception as e:
+            print(f"PDF error: {e}")
+
+    # Отправка пользователю
+    try:
+        if "file_combined" in cloudinary_urls:
+            await bot.send_photo(
+                chat_id=user_id,
+                photo=cloudinary_urls["file_combined"],
+                caption=f"📦 Общее изображение ({format_type.upper()})"
+            )
+        if zip_url:
+            await bot.send_document(
+                chat_id=user_id,
+                document=zip_url,
+                caption=f"🗜️ Все кусочки ({len([k for k in converted if k.startswith('file_piece_')])} файлов)"
+            )
+        if pdf_url:
+            await bot.send_document(
+                chat_id=user_id,
+                document=pdf_url,
+                caption=f" PDF для печати (A4, 300 DPI)"
+            )
+        pieces_urls = [cloudinary_urls[k] for k in sorted(converted.keys()) if k.startswith("file_piece_")]
+        for i in range(0, len(pieces_urls), 10):
+            batch = pieces_urls[i:i+10]
+            media = [InputMediaPhoto(media=url) for url in batch]
+            await bot.send_media_group(chat_id=user_id, media=media)
+
+        await save_history(
+            user_id, session_id,
+            cloudinary_urls.get("file_combined", ""),
+            len(pieces_urls), format_type
+        )
+        await increment_usage(user_id)
+
+        gallery_id = None
+        # Публикация в галерею (если запрошено)
+        # publish_gallery передаётся из фронтенда
+
+        return web.json_response({
+            "status": "ok",
+            "message": "Файлы отправлены",
+            "session_id": session_id,
+            "gallery_id": gallery_id
+        })
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 # ===== API: ГАЛЕРЕЯ =====
 async def handle_gallery(request):
@@ -362,9 +541,9 @@ async def handle_gallery(request):
     } for r in rows]
     return web.json_response({"items": items, "page": page})
 
-# ===== ПУЛЕНЕПРОБИВАЕМЫЙ ЗАПУСК =====
+# ===== ЗАПУСК =====
 async def health_handler(request):
-    return web.json_response({"status": "ok", "message": "Сервер работает!"})
+    return web.json_response({"status": "ok"})
 
 async def on_startup(app):
     await init_db()
@@ -375,7 +554,7 @@ async def on_startup(app):
         me = await bot.get_me()
         print(f"🤖 Бот @{me.username} успешно подключен к Telegram!")
     except Exception as e:
-        print(f"⚠️ Ошибка подключения бота (проверьте BOT_TOKEN): {e}")
+        print(f"⚠️ Ошибка подключения бота: {e}")
     print("=" * 50)
 
 async def main():
@@ -391,7 +570,7 @@ async def main():
     await runner.setup()
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f" Веб-сервер запущен на порту {port}")
+    print(f"🚀 Веб-сервер запущен на порту {port}")
 
     print("🔄 Запускаем polling бота...")
     await dp.start_polling(bot)
