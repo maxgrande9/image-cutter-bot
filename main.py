@@ -22,27 +22,22 @@ try:
     else:
         print("️ CLOUDINARY_URL не задан — загрузка файлов отключена")
 except Exception as e:
+# Безопасный импорт cloudinary
+CLOUDINARY_AVAILABLE = False
+try:
+    import cloudinary
+    import cloudinary.uploader
+    
+    cloudinary_url = os.getenv("CLOUDINARY_URL")
+    if cloudinary_url and cloudinary_url.strip().startswith("cloudinary://"):
+        cloudinary.config(cloudinary_url=cloudinary_url.strip())
+        CLOUDINARY_AVAILABLE = True
+        print("✅ Cloudinary подключен")
+    else:
+        print("⚠️ CLOUDINARY_URL не задан — загрузка файлов отключена")
+except Exception as e:
     CLOUDINARY_AVAILABLE = False
     print(f"⚠️ Cloudinary не инициализирован: {e}")
-from PIL import Image
-from fpdf import FPDF
-from rembg import remove, new_session
-from aiogram import Bot, Dispatcher, Router, F
-from aiogram.types import (
-    Message, CallbackQuery, InputMediaPhoto,
-    LabeledPrice, PreCheckoutQuery, SuccessfulPayment
-)
-from aiogram.filters import Command
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# ===== КОНФИГУРАЦИЯ =====
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CLOUDINARY_URL = os.getenv("CLOUDINARY_URL")
-MINI_APP_URL = os.getenv("MINI_APP_URL")
-FREE_LIMIT = int(os.getenv("FREE_LIMIT", "5"))
-PREMIUM_PRICE = 150  # Telegram Stars
 
 # ===== БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ CLOUDINARY =====
 CLOUDINARY_AVAILABLE = False
