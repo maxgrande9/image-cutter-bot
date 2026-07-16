@@ -343,14 +343,38 @@ async def on_startup(app):
     print("=" * 50, flush=True)
 
 async def main():
-    print(" [5/5] Запуск функции main()", flush=True)
     app = web.Application()
     app.on_startup.append(on_startup)
+    
+    # Добавляем CORS-заголовки для всех ответов
+    async def cors_middleware(app, handler):
+        async def middleware(request):
+            response = await handler(request)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
+            response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+            return response
+        return middleware
+    
+    app.middlewares.append(cors_middleware)
+    
     app.router.add_post("/upload", handle_upload)
     app.router.add_get("/gallery", handle_gallery)
     app.router.add_get("/health", health_handler)
+    
+    # Обработчик OPTIONS запросов (для CORS preflight)
+    async def options_handler(request):
+        return web.Response(
+            headers={
+                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+                'Access-Control-Allow-Headers': 'Content-Type'
+            }
+        )
+    
+    app.router.add_route("OPTIONS", "/upload", options_handler)
+    app.router.add_route("OPTIONS", "/gallery", options_handler)
 
-    # ВАЖНО: Берем порт из переменных Railway
     port = int(os.environ.get("PORT", 8080))
     print(f"🚀 [5/5] Попытка запустить сервер на 0.0.0.0:{port}", flush=True)
     
@@ -362,7 +386,3 @@ async def main():
 
     print("🔄 Запускаем polling бота...", flush=True)
     await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    print("🚀 Блок __main__ выполнен, вызываем asyncio.run(main())", flush=True)
-    asyncio.run(main())
