@@ -8,8 +8,22 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from aiohttp import web
 import aiosqlite
-import cloudinary
-import cloudinary.uploader
+# Безопасный импорт cloudinary — не крашит, если переменная не задана
+CLOUDINARY_AVAILABLE = False
+try:
+    import cloudinary
+    import cloudinary.uploader
+    
+    # Проверяем, задана ли переменная
+    cloudinary_url = os.getenv("CLOUDINARY_URL")
+    if cloudinary_url and cloudinary_url.strip().startswith("cloudinary://"):
+              CLOUDINARY_AVAILABLE = True
+        print("✅ Cloudinary подключен")
+    else:
+        print("️ CLOUDINARY_URL не задан — загрузка файлов отключена")
+except Exception as e:
+    CLOUDINARY_AVAILABLE = False
+    print(f"⚠️ Cloudinary не инициализирован: {e}")
 from PIL import Image
 from fpdf import FPDF
 from rembg import remove, new_session
