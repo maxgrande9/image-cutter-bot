@@ -30,7 +30,21 @@ MINI_APP_URL = os.getenv("MINI_APP_URL")
 FREE_LIMIT = int(os.getenv("FREE_LIMIT", "5"))
 PREMIUM_PRICE = 150  # Telegram Stars
 
-cloudinary.config(cloudinary_url=CLOUDINARY_URL)
+# ===== БЕЗОПАСНАЯ ИНИЦИАЛИЗАЦИЯ CLOUDINARY =====
+CLOUDINARY_AVAILABLE = False
+raw_cloudinary_url = os.getenv("CLOUDINARY_URL", "").strip().strip('"').strip("'")
+
+if raw_cloudinary_url.startswith("cloudinary://"):
+    try:
+        import cloudinary
+        cloudinary.config(cloudinary_url=raw_cloudinary_url)
+        CLOUDINARY_AVAILABLE = True
+        print("✅ Cloudinary успешно подключен")
+    except Exception as e:
+        print(f"⚠️ Ошибка инициализации Cloudinary: {e}")
+else:
+    print("⚠️ CLOUDINARY_URL не задан или имеет неверный формат. Бот запустится, но загрузка файлов будет недоступна.")
+# ================================================
 
 # Загружаем rembg лениво (экономим RAM на старте)
 rembg_session = None
