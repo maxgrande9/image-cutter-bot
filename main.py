@@ -586,44 +586,44 @@ async def handle_gallery(request):
     return web.json_response({"items": items, "page": page})
 
 # ===== ЗАПУСК =====
-# ===== НАДЁЖНЫЙ ЗАПУСК =====
+# ===== ПУЛЕНЕПРОБИВАЕМЫЙ ЗАПУСК =====
+
 async def health_handler(request):
-    """Эндпоинт для проверки здоровья сервера Railway"""
-    try:
-        me = await bot.get_me()
-        return web.json_response({"status": "ok", "bot": me.username})
-    except Exception:
-        return web.json_response({"status": "ok"})
+    # Максимально простой ответ. Никаких запросов к Telegram API.
+    # Если сервер отвечает, значит он жив.
+    return web.json_response({"status": "ok"})
 
 async def on_startup(app):
     await init_db()
     print("✅ База данных инициализирована")
+    print(f"🌐 Mini App URL: {MINI_APP_URL}")
+    
+    # Проверку бота делаем отдельно. Если токен плохой, это не уронит healthcheck
     try:
         me = await bot.get_me()
-        print(f"🤖 Бот @{me.username} запущен")
-    except:
-        print("🤖 Бот запущен")
-    print(f"🌐 Mini App: {MINI_APP_URL}")
+        print(f"🤖 Бот @{me.username} успешно подключен к Telegram!")
+    except Exception as e:
+        print(f"⚠️ Ошибка подключения бота (проверьте BOT_TOKEN в Variables): {e}")
 
 async def main():
-    # 1. Настраиваем веб-сервер
     app = web.Application()
     app.on_startup.append(on_startup)
     app.router.add_post("/upload", handle_upload)
     app.router.add_get("/gallery", handle_gallery)
     app.router.add_get("/health", health_handler)
 
-    # Railway автоматически передаёт порт в переменную PORT
-    port = int(os.getenv("PORT", 8080))
+    # ВАЖНО: Railway динамически назначает порт. Читаем его из окружения.
+    port = int(os.environ.get("PORT", 8080))
     
-    # 2. Запускаем веб-сервер (AppRunner - официальный способ aiohttp)
     runner = web.AppRunner(app)
     await runner.setup()
+    
+    # ВАЖНО: '0.0.0.0' означает, что сервер слушает все сетевые интерфейсы
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
-    print(f"🌐 Веб-сервер успешно запущен на порту {port}")
+    print(f"🚀 Веб-сервер запущен и слушает порт {port}")
 
-    # 3. Запускаем бота (это блокирующая операция, она будет работать вечно)
+    # Запускаем бота. Это блокирующая операция, она работает "вечно"
     print("🔄 Запускаем polling бота...")
     await dp.start_polling(bot)
 
